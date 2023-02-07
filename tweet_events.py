@@ -12,7 +12,58 @@ try:
 except ImportError:
     tweepy = None
 
+try:
+    import mastodon
+except ImportError:
+    mastodon = None
 
+class Twitter:
+    def __init__(self, dt_instance):
+        self.dt_instance = dt_instance
+        self.twitter_api = None
+        try:
+            self.twitter_api = tweepy.Client(
+                consumer_key=os.environ["TWITTER_CONSUMER_KEY"],
+                consumer_secret=os.environ["TWITTER_CONSUMER_SECRET"],
+                access_token=os.environ["TWITTER_TOKEN_KEY"],
+                access_token_secret=os.environ["TWITTER_TOKEN_SECRET"],
+                wait_on_rate_limit=True,
+            )
+        except KeyError as why:
+            self.dt_instance.error(f"Environment variable not found: {why}")
+        except tweepy.TweepyException as why:
+            self.dt_instance.error(str(why))
+
+    def publish(self, message):
+        print(f"***Twitter.publish {message}")
+        # if self.twitter_api is None:
+            # self.init_twitter()
+        # try:
+        #     status = self.twitter_api.create_tweet(text=message)
+        # except tweepy.HTTPException as why:
+        #     for message in why.api_messages:
+        #         self.warn(f"Tweet error: {message}")
+            # raise  # not self.error, so we can remember what we read up to.
+
+class Mastodon:
+    def __init__(self, dt_instance):
+        self.dt_instance = dt_instance
+        self.mastodon_api = None
+        try:
+            self.mastodon_api = mastodon.Mastodon(
+                                    access_token=os.environ["TOOT_TOKEN_KEY"],
+                                    api_base_url=os.environ["TOOT_API_BASE"],
+                                    ratelimit_method='wait')
+        except mastodon.MastodonError as why:
+            print(why)
+
+
+    def publish(self, message):
+        print(f"***Mastodon.publish {message}")
+        # try:
+        #     status = self.mastodon_api.toot(message)
+        # except mastodon.MastodonError as why:
+        #     print(why)
 class DatatrackerTracker:
     API_BASE = "https://datatracker.ietf.org"
     CHUNK_SIZE = 250
@@ -32,13 +83,24 @@ class DatatrackerTracker:
 
     def __init__(self, argv=None):
         self.args = self.parse_args(argv)
-        self.twitter_api = None
+        publishers = os.environ["PUBLISHERS"].split(',')
+        self.Publishers = {}
+        for publisher in publishers or []:
+            if publisher == "twitter":
+                self.twitter = Twitter(self)
+                self.Publishers.setdefault(publisher, self.twitter)
+            elif publisher == "mastodon":
+                self.mastodon = Mastodon(self)
+                self.Publishers.setdefault(publisher, self.mastodon)
+            else:
+                self.error(f"Unknown Publisher {publisher}")
+
 
     def run(self):
         last_seen_id = self.get_last_seen()
         self.note(f"Resuming at event: {last_seen_id}")
         if self.args.markdown:
-            print(f"### Tweeting datatracker events since #{last_seen_id}")
+            print(f"### Publishing datatracker events since #{last_seen_id}")
         events = self.get_events(last_seen_id)
         new_last_seen = self.process_events(events, last_seen_id)
         self.note(f"Last event seen: {new_last_seen}")
@@ -53,7 +115,8 @@ class DatatrackerTracker:
             if self.args.debug:
                 self.note(f"Event: {event['type']} ({event['desc']})")
             template = self.INTERESTING_EVENTS.get(event["type"], None)
-            if type(template) is dict:
+            if isinstance(template, dict):
+            # if type(template) is dict:
                 template = template.get(event["desc"], None)
             if not template:
                 continue
@@ -64,16 +127,23 @@ class DatatrackerTracker:
             self.note(f"Message: {message}")
             if self.args.markdown:
                 print(f"* {message}")
+            self.publish(message)
             if not self.args.dry_run:
-                try:
-                    self.tweet(message)
-                except tweepy.TweepyException:
-                    last_seen_id = event["id"] - 1
-                    break  # didn't tweet so we should bail
+                self.publish(message)
+                # try:
+                #     self.tweet(message)
+                # except tweepy.TweepyException:
+                #     last_seen_id = event["id"] - 1
+                #     break  # didn't tweet so we should bail
             num += 1
         if self.args.markdown:
             print(f"Found {num} events.")
         return last_seen_id
+
+    def publish(self, message):
+        for platform, platform_api in self.Publishers.items():
+            self.note(f"Calling {platform} '{message}'")
+            platform_api.publish(message)
 
     def get_events(self, last_seen_id=None):
         results = self.get_doc(
@@ -108,33 +178,9 @@ class DatatrackerTracker:
         link = f"{self.API_BASE}/doc/{name}/"
         return template.format(**locals())
 
-    def init_twitter(self):
-        try:
-            self.twitter_api = tweepy.Client(
-                consumer_key=os.environ["TWITTER_CONSUMER_KEY"],
-                consumer_secret=os.environ["TWITTER_CONSUMER_SECRET"],
-                access_token=os.environ["TWITTER_TOKEN_KEY"],
-                access_token_secret=os.environ["TWITTER_TOKEN_SECRET"],
-                wait_on_rate_limit=True,
-            )
-        except KeyError as why:
-            self.error(f"Environment variable not found: {why}")
-        except tweepy.TweepyException as why:
-            self.error(str(why))
-
-    def tweet(self, message):
-        if self.twitter_api is None:
-            self.init_twitter()
-        try:
-            status = self.twitter_api.create_tweet(text=message)
-        except tweepy.HTTPException as why:
-            for message in why.api_messages:
-                self.warn(f"Tweet error: {message}")
-            raise  # not self.error, so we can remember what we read up to.
-
     def parse_args(self, argv):
         parser = argparse.ArgumentParser(
-            description="Tweet about recent changes in IETF Working Groups"
+            description="Publish about recent changes in IETF Working Groups"
         )
         parser.add_argument(
             "-g",
@@ -148,7 +194,7 @@ class DatatrackerTracker:
             "--dry-run",
             dest="dry_run",
             action="store_true",
-            help="don't tweet; just show messages on STDOUT",
+            help="don't Publish; just show messages on STDOUT",
         )
         parser.add_argument(
             "-m",
@@ -185,7 +231,7 @@ class DatatrackerTracker:
             last_seen_id = self.args.last_seen_id
         elif self.args.last_seen_file:
             try:
-                with open(self.args.last_seen_file) as fh:
+                with open(self.args.last_seen_file, encoding="ascii") as fh:
                     last_seen_id = int(fh.read())
             except IOError as why:
                 self.warn(f"Cannot open {self.args.last_seen_file} for reading: {why}")
@@ -197,7 +243,7 @@ class DatatrackerTracker:
     def write_last_seen(self, last_seen_id):
         if self.args.last_seen_file:
             try:
-                with open(self.args.last_seen_file, "w") as fh:
+                with open(self.args.last_seen_file, "w", encoding="ascii") as fh:
                     fh.write(str(last_seen_id))
             except IOError as why:
                 self.error(f"Cannot open {self.args.last_seen_file} for writing: {why}")
@@ -232,6 +278,7 @@ class DatatrackerTracker:
             print("## Error")
             print(f"{message}")
         sys.exit(1)
+
 
 
 if __name__ == "__main__":

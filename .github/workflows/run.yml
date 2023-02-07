@@ -24,6 +24,9 @@ jobs:
         pip install -r requirements.txt
     - name: Run tweet_events.py
       env:
+        PUBLISHERS: ${{ secrets.PUBLISHERS }}
+        TOOT_API_BASE: ${{ secrets.TOOT_API_BASE }}
+        TOOT_TOKEN_KEY: ${{ secrets.TOOT_TOKEN_KEY }}
         TWITTER_CONSUMER_KEY: ${{ secrets.TWITTER_CONSUMER_KEY }}
         TWITTER_CONSUMER_SECRET: ${{ secrets.TWITTER_CONSUMER_SECRET }}
         TWITTER_TOKEN_KEY: ${{ secrets.TWITTER_TOKEN_KEY }}
